@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 import logging
 from datetime import datetime, timedelta, time
 from dataclasses import dataclass
@@ -353,3 +354,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

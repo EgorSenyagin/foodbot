@@ -3,6 +3,7 @@
 
 import os
 import logging
+import asyncio
 from datetime import datetime, timedelta, time
 from dataclasses import dataclass
 from typing import Dict, Tuple, Optional
@@ -207,6 +208,16 @@ class FoodBot:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
         return d < today or (d == today and datetime.now().time() >= Config.DEADLINE_TIME)
 
+    # --------- временные сообщения ---------
+    async def send_temp_message(self, chat_id, text, context, delay=3):
+        msg = await context.bot.send_message(chat_id=chat_id, text=text)
+        await asyncio.sleep(delay)
+        try:
+            await msg.delete()
+        except:
+            pass
+
+    # --------- команды ---------
     async def start(self, u: Update, c):
         await u.message.reply_text("🏫 Система питания", reply_markup=KB.main())
 
@@ -260,38 +271,57 @@ class FoodBot:
             await q.message.edit_text("Выберите питание", reply_markup=KB.meals(data[1], m))
             return
 
+        # ====== Выбор еды ======
         if data[0] == "meal":
             if self.locked(s["date"]):
-                await q.answer("⛔ Редактирование запрещено", show_alert=True)
+                await self.send_temp_message(q.message.chat_id, "⛔ Редактирование запрещено", c)
                 return
             _, d, k = data
             m = self.db.get_student_orders(s["id"], d)
             m[k] = not m[k]
             self.db.save_order(s["id"], d, m)
             await q.message.edit_reply_markup(KB.meals(d, m))
+            await self.send_temp_message(q.message.chat_id, "✅ Заказ успешно сохранён", c)
 
+        # ====== Всё на день ======
         if data[0] == "all_day":
-            if not self.locked(data[1]):
-                self.db.save_order(s["id"], data[1], {"breakfast": True, "lunch": True, "snack": True})
-            await q.answer("Готово")
+            if self.locked(data[1]):
+                await self.send_temp_message(q.message.chat_id, "⛔ Редактирование запрещено", c)
+                return
+            self.db.save_order(
+                s["id"],
+                data[1],
+                {"breakfast": True, "lunch": True, "snack": True}
+            )
+            await self.send_temp_message(q.message.chat_id, "✅ Питание на день успешно заказано", c)
 
+        # ====== Всё на неделю ======
         if data[0] == "all_week":
             d = datetime.strptime(data[1], "%Y-%m-%d")
             mon = d - timedelta(days=d.weekday())
             for i in range(5):
                 day = (mon + timedelta(days=i)).strftime("%Y-%m-%d")
                 if not self.locked(day):
-                    self.db.save_order(s["id"], day, {"breakfast": True, "lunch": True, "snack": True})
-            await q.answer("Неделя оформлена")
+                    self.db.save_order(
+                        s["id"],
+                        day,
+                        {"breakfast": True, "lunch": True, "snack": True}
+                    )
+            await self.send_temp_message(q.message.chat_id, "✅ Питание на неделю успешно заказано", c)
 
+        # ====== Отмена недели ======
         if data[0] == "cancel_week":
             d = datetime.strptime(data[1], "%Y-%m-%d")
             mon = d - timedelta(days=d.weekday())
             for i in range(5):
                 day = (mon + timedelta(days=i)).strftime("%Y-%m-%d")
                 if not self.locked(day):
-                    self.db.save_order(s["id"], day, {"breakfast": False, "lunch": False, "snack": False})
-            await q.answer("Неделя отменена")
+                    self.db.save_order(
+                        s["id"],
+                        day,
+                        {"breakfast": False, "lunch": False, "snack": False}
+                    )
+            await self.send_temp_message(q.message.chat_id, "❌ Питание на неделю отменено", c)
 
     async def input_id(self, u: Update, c):
         sid = u.message.text.strip()

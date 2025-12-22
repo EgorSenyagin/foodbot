@@ -1,8 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 import logging
 from datetime import datetime, timedelta, time
 from dataclasses import dataclass
@@ -22,8 +18,7 @@ class Config:
     DATA_DIR = "data"
     ORDERS_FILE = "orders.xlsx"
     STUDENTS_FILE = "students.xlsx"
-    DEADLINE_TIME = time(8, 0)  # 08:00
-
+    DEADLINE_TIME = time(8, 0)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,10 +32,8 @@ class StudentInfo:
     full_name: str
     class_name: str
 
-
 # ================== БАЗА ДАННЫХ ==================
 class Database:
-
     def __init__(self):
         os.makedirs(Config.DATA_DIR, exist_ok=True)
         self.orders_path = os.path.join(Config.DATA_DIR, Config.ORDERS_FILE)
@@ -50,21 +43,17 @@ class Database:
     def _init_orders_file(self):
         if os.path.exists(self.orders_path):
             return
-
         wb = Workbook()
         ws = wb.active
         ws.title = "Заказы"
-
         headers = ["Ученик"]
         d = datetime.now()
         added = 0
-
         while added < 100:
             if d.weekday() < 5:
                 headers.append(d.strftime("%d.%m.%Y"))
                 added += 1
             d += timedelta(days=1)
-
         ws.append(headers)
         wb.save(self.orders_path)
 
@@ -72,9 +61,9 @@ class Database:
         try:
             wb = load_workbook(self.students_path, data_only=True)
             ws = wb.active
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                if str(row[0]) == student_id:
-                    return True, StudentInfo(str(row[0]), row[1], row[2])
+            for r in ws.iter_rows(min_row=2, values_only=True):
+                if str(r[0]) == student_id:
+                    return True, StudentInfo(str(r[0]), r[1], r[2])
         except Exception as e:
             logger.error(e)
         return False, None
@@ -82,89 +71,75 @@ class Database:
     def empty_meals(self):
         return {"breakfast": False, "lunch": False, "snack": False}
 
-    def _find_column(self, ws, date_str: str):
-        header = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+    def _find_col(self, ws, date_str):
+        h = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
         for c in range(2, ws.max_column + 1):
-            if ws.cell(1, c).value == header:
+            if ws.cell(1, c).value == h:
                 return c
         return None
 
-    def _get_or_create_column(self, ws, date_str: str):
-        col = self._find_column(ws, date_str)
-        if col:
-            return col
-        col = ws.max_column + 1
-        ws.cell(1, col, datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y"))
-        return col
+    def _get_col(self, ws, date_str):
+        c = self._find_col(ws, date_str)
+        if c:
+            return c
+        c = ws.max_column + 1
+        ws.cell(1, c, datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y"))
+        return c
 
-    def _get_or_create_row(self, ws, student_name: str):
+    def _get_row(self, ws, name):
         for r in range(2, ws.max_row + 1):
-            if ws.cell(r, 1).value == student_name:
+            if ws.cell(r, 1).value == name:
                 return r
         r = ws.max_row + 1
-        ws.cell(r, 1, student_name)
+        ws.cell(r, 1, name)
         return r
 
-    def save_order(self, student_id: str, date_str: str, meals: Dict[str, bool]):
+    def save_order(self, student_id, date_str, meals):
         ok, student = self.verify_student(student_id)
         if not ok:
             return
-
         wb = load_workbook(self.orders_path)
         ws = wb.active
-
-        row = self._get_or_create_row(ws, student.full_name)
-        col = self._get_or_create_column(ws, date_str)
-
-        symbols = []
-        if meals["breakfast"]: symbols.append("З")
-        if meals["lunch"]: symbols.append("О")
-        if meals["snack"]: symbols.append("П")
-
-        ws.cell(row, col, "+".join(symbols))
+        r = self._get_row(ws, student.full_name)
+        c = self._get_col(ws, date_str)
+        val = []
+        if meals["breakfast"]: val.append("З")
+        if meals["lunch"]: val.append("О")
+        if meals["snack"]: val.append("П")
+        ws.cell(r, c, "+".join(val))
         wb.save(self.orders_path)
 
-    def get_student_orders(self, student_id: str, date_str: str):
+    def get_student_orders(self, student_id, date_str):
         ok, student = self.verify_student(student_id)
         if not ok:
             return self.empty_meals()
-
         wb = load_workbook(self.orders_path, data_only=True)
         ws = wb.active
-
-        col = self._find_column(ws, date_str)
-        if not col:
+        c = self._find_col(ws, date_str)
+        if not c:
             return self.empty_meals()
-
         for r in range(2, ws.max_row + 1):
             if ws.cell(r, 1).value == student.full_name:
-                val = ws.cell(r, col).value or ""
-                return {
-                    "breakfast": "З" in val,
-                    "lunch": "О" in val,
-                    "snack": "П" in val
-                }
+                v = ws.cell(r, c).value or ""
+                return {"breakfast": "З" in v, "lunch": "О" in v, "snack": "П" in v}
         return self.empty_meals()
 
-    def count_for_date(self, date_str: str):
+    def count_for_date(self, date_str):
         wb = load_workbook(self.orders_path, data_only=True)
         ws = wb.active
-        col = self._find_column(ws, date_str)
+        c = self._find_col(ws, date_str)
         res = {"breakfast": 0, "lunch": 0, "snack": 0}
-        if not col:
+        if not c:
             return res
-
         for r in range(2, ws.max_row + 1):
-            val = ws.cell(r, col).value or ""
-            if "З" in val: res["breakfast"] += 1
-            if "О" in val: res["lunch"] += 1
-            if "П" in val: res["snack"] += 1
+            v = ws.cell(r, c).value or ""
+            if "З" in v: res["breakfast"] += 1
+            if "О" in v: res["lunch"] += 1
+            if "П" in v: res["snack"] += 1
         return res
-
 
 # ================== КНОПКИ ==================
 class KB:
-
     @staticmethod
     def main():
         return InlineKeyboardMarkup([
@@ -190,12 +165,11 @@ class KB:
 
     @staticmethod
     def meals(date, m):
-        def b(text, key):
+        def b(t, k):
             return InlineKeyboardButton(
-                f"{'✅ ' if m[key] else ''}{text}",
-                callback_data=f"meal|{date}|{key}"
+                f"{'✅ ' if m[k] else ''}{t}",
+                callback_data=f"meal|{date}|{k}"
             )
-
         return InlineKeyboardMarkup([
             [b("🍳 Завтрак", "breakfast")],
             [b("🍲 Обед", "lunch")],
@@ -206,10 +180,16 @@ class KB:
             [InlineKeyboardButton("⬅ К датам", callback_data="back_dates")]
         ])
 
+    @staticmethod
+    def stats(is_admin: bool):
+        kb = []
+        if is_admin:
+            kb.append([InlineKeyboardButton("⬇ Скачать orders.xlsx", callback_data="download_orders")])
+        kb.append([InlineKeyboardButton("⬅ Назад", callback_data="back_main")])
+        return InlineKeyboardMarkup(kb)
 
 # ================== БОТ ==================
 class FoodBot:
-
     INPUT_ID, DATES, MEALS = range(3)
 
     def __init__(self):
@@ -219,14 +199,10 @@ class FoodBot:
     def session(self, uid):
         return self.sessions.setdefault(uid, {})
 
-    def is_edit_locked(self, date_str: str) -> bool:
+    def locked(self, date_str):
         today = datetime.now().date()
-        selected = datetime.strptime(date_str, "%Y-%m-%d").date()
-        if selected < today:
-            return True
-        if selected == today and datetime.now().time() >= Config.DEADLINE_TIME:
-            return True
-        return False
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        return d < today or (d == today and datetime.now().time() >= Config.DEADLINE_TIME)
 
     async def start(self, u: Update, c):
         await u.message.reply_text("🏫 Система питания", reply_markup=KB.main())
@@ -234,8 +210,8 @@ class FoodBot:
     async def button(self, u: Update, c):
         q = u.callback_query
         await q.answer()
-        data = q.data.split("|")
         uid = q.from_user.id
+        data = q.data.split("|")
         s = self.session(uid)
 
         if data[0] == "input_id":
@@ -246,25 +222,25 @@ class FoodBot:
             if uid not in Config.ADMIN_IDS:
                 await q.message.edit_text("❌ Нет доступа", reply_markup=KB.main())
                 return
-
             today = datetime.now().strftime("%Y-%m-%d")
-            next_day = datetime.now() + timedelta(days=1)
-            while next_day.weekday() >= 5:
-                next_day += timedelta(days=1)
-            next_day = next_day.strftime("%Y-%m-%d")
-
+            nxt = datetime.now() + timedelta(days=1)
+            while nxt.weekday() >= 5:
+                nxt += timedelta(days=1)
+            nxt = nxt.strftime("%Y-%m-%d")
             t = self.db.count_for_date(today)
-            n = self.db.count_for_date(next_day)
-
+            n = self.db.count_for_date(nxt)
             text = (
-                "📊 Статистика заказов\n\n"
-                f"Сегодня:\n"
-                f"🍳Завтраки {t['breakfast']}  🍲Обеды {t['lunch']}  🥪Полдники {t['snack']}\n\n"
-                f"Следующий день:\n"
-                f"🍳Завтраки {n['breakfast']}  🍲Обеды {n['lunch']}  🥪Полдники {n['snack']}"
+                "📊 Статистика\n\n"
+                f"Сегодня:\n🍳 {t['breakfast']}  🍲 {t['lunch']}  🥪 {t['snack']}\n\n"
+                f"Следующий день:\n🍳 {n['breakfast']}  🍲 {n['lunch']}  🥪 {n['snack']}"
             )
+            await q.message.edit_text(text, reply_markup=KB.stats(True))
+            return
 
-            await q.message.edit_text(text, reply_markup=KB.main())
+        if data[0] == "download_orders":
+            if uid not in Config.ADMIN_IDS:
+                return
+            await q.message.reply_document(open(self.db.orders_path, "rb"), filename="orders.xlsx")
             return
 
         if data[0] == "back_main":
@@ -277,67 +253,57 @@ class FoodBot:
 
         if data[0] == "date":
             s["date"] = data[1]
-            m = self.db.get_student_orders(s["id"], s["date"])
-            await q.message.edit_text("Выберите питание", reply_markup=KB.meals(s["date"], m))
+            m = self.db.get_student_orders(s["id"], data[1])
+            await q.message.edit_text("Выберите питание", reply_markup=KB.meals(data[1], m))
             return
 
         if data[0] == "meal":
-            if self.is_edit_locked(s["date"]):
+            if self.locked(s["date"]):
                 await q.answer("⛔ Редактирование запрещено", show_alert=True)
                 return
-            _, date, meal = data
-            m = self.db.get_student_orders(s["id"], date)
-            m[meal] = not m[meal]
-            self.db.save_order(s["id"], date, m)
-            await q.message.edit_reply_markup(KB.meals(date, m))
-
-        if data[0] in ("all_day", "all_week", "cancel_week"):
-            if self.is_edit_locked(data[1]):
-                await q.answer("⛔ Редактирование запрещено", show_alert=True)
-                return
+            _, d, k = data
+            m = self.db.get_student_orders(s["id"], d)
+            m[k] = not m[k]
+            self.db.save_order(s["id"], d, m)
+            await q.message.edit_reply_markup(KB.meals(d, m))
 
         if data[0] == "all_day":
-            m = {"breakfast": True, "lunch": True, "snack": True}
-            self.db.save_order(s["id"], data[1], m)
-            await q.message.edit_reply_markup(KB.meals(data[1], m))
+            if not self.locked(data[1]):
+                self.db.save_order(s["id"], data[1], {"breakfast": True, "lunch": True, "snack": True})
+            await q.answer("Готово")
 
         if data[0] == "all_week":
             d = datetime.strptime(data[1], "%Y-%m-%d")
-            monday = d - timedelta(days=d.weekday())
+            mon = d - timedelta(days=d.weekday())
             for i in range(5):
-                day = (monday + timedelta(days=i)).strftime("%Y-%m-%d")
-                if not self.is_edit_locked(day):
-                    self.db.save_order(s["id"], day,
-                        {"breakfast": True, "lunch": True, "snack": True})
-            await q.answer("✅ Заказы на неделю оформлены")
+                day = (mon + timedelta(days=i)).strftime("%Y-%m-%d")
+                if not self.locked(day):
+                    self.db.save_order(s["id"], day, {"breakfast": True, "lunch": True, "snack": True})
+            await q.answer("Неделя оформлена")
 
         if data[0] == "cancel_week":
             d = datetime.strptime(data[1], "%Y-%m-%d")
-            monday = d - timedelta(days=d.weekday())
+            mon = d - timedelta(days=d.weekday())
             for i in range(5):
-                day = (monday + timedelta(days=i)).strftime("%Y-%m-%d")
-                if not self.is_edit_locked(day):
-                    self.db.save_order(s["id"], day,
-                        {"breakfast": False, "lunch": False, "snack": False})
-            await q.answer("❌ Заказы на неделю отменены")
+                day = (mon + timedelta(days=i)).strftime("%Y-%m-%d")
+                if not self.locked(day):
+                    self.db.save_order(s["id"], day, {"breakfast": False, "lunch": False, "snack": False})
+            await q.answer("Неделя отменена")
 
     async def input_id(self, u: Update, c):
         sid = u.message.text.strip()
-        ok, student = self.db.verify_student(sid)
+        ok, st = self.db.verify_student(sid)
         if not ok:
             await u.message.reply_text("❌ Ученик не найден")
             return self.INPUT_ID
-
         self.session(u.effective_user.id)["id"] = sid
-        await u.message.reply_text(f"👤 Ученик: {student.full_name}", reply_markup=KB.dates())
+        await u.message.reply_text(f"👤 {st.full_name}", reply_markup=KB.dates())
         return self.DATES
-
 
 # ================== ЗАПУСК ==================
 def main():
-    bot = FoodBot()
     app = Application.builder().token(Config.BOT_TOKEN).build()
-
+    bot = FoodBot()
     app.add_handler(CommandHandler("start", bot.start))
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(bot.button, pattern="input_id")],
@@ -351,7 +317,5 @@ def main():
     app.add_handler(CallbackQueryHandler(bot.button))
     app.run_polling()
 
-
 if __name__ == "__main__":
     main()
-

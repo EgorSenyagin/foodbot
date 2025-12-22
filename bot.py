@@ -121,7 +121,11 @@ class Database:
         for r in range(2, ws.max_row + 1):
             if ws.cell(r, 1).value == student.full_name:
                 v = ws.cell(r, c).value or ""
-                return {"breakfast": "З" in v, "lunch": "О" in v, "snack": "П" in v}
+                return {
+                    "breakfast": "З" in v,
+                    "lunch": "О" in v,
+                    "snack": "П" in v
+                }
         return self.empty_meals()
 
     def count_for_date(self, date_str):
@@ -181,7 +185,7 @@ class KB:
         ])
 
     @staticmethod
-    def stats(is_admin: bool):
+    def stats(is_admin):
         kb = []
         if is_admin:
             kb.append([InlineKeyboardButton("⬇ Скачать orders.xlsx", callback_data="download_orders")])
@@ -238,9 +242,8 @@ class FoodBot:
             return
 
         if data[0] == "download_orders":
-            if uid not in Config.ADMIN_IDS:
-                return
-            await q.message.reply_document(open(self.db.orders_path, "rb"), filename="orders.xlsx")
+            if uid in Config.ADMIN_IDS:
+                await q.message.reply_document(open(self.db.orders_path, "rb"), filename="orders.xlsx")
             return
 
         if data[0] == "back_main":
@@ -266,11 +269,19 @@ class FoodBot:
             m[k] = not m[k]
             self.db.save_order(s["id"], d, m)
             await q.message.edit_reply_markup(KB.meals(d, m))
+            await q.answer("✅ Заказ обновлён")
+            return
 
         if data[0] == "all_day":
-            if not self.locked(data[1]):
-                self.db.save_order(s["id"], data[1], {"breakfast": True, "lunch": True, "snack": True})
-            await q.answer("Готово")
+            if self.locked(data[1]):
+                await q.answer("⛔ Редактирование запрещено", show_alert=True)
+                return
+            self.db.save_order(
+                s["id"], data[1],
+                {"breakfast": True, "lunch": True, "snack": True}
+            )
+            await q.answer("✅ Заказ на день оформлен", show_alert=True)
+            return
 
         if data[0] == "all_week":
             d = datetime.strptime(data[1], "%Y-%m-%d")
@@ -278,8 +289,12 @@ class FoodBot:
             for i in range(5):
                 day = (mon + timedelta(days=i)).strftime("%Y-%m-%d")
                 if not self.locked(day):
-                    self.db.save_order(s["id"], day, {"breakfast": True, "lunch": True, "snack": True})
-            await q.answer("Неделя оформлена")
+                    self.db.save_order(
+                        s["id"], day,
+                        {"breakfast": True, "lunch": True, "snack": True}
+                    )
+            await q.answer("✅ Заказы на неделю оформлены", show_alert=True)
+            return
 
         if data[0] == "cancel_week":
             d = datetime.strptime(data[1], "%Y-%m-%d")
@@ -287,8 +302,12 @@ class FoodBot:
             for i in range(5):
                 day = (mon + timedelta(days=i)).strftime("%Y-%m-%d")
                 if not self.locked(day):
-                    self.db.save_order(s["id"], day, {"breakfast": False, "lunch": False, "snack": False})
-            await q.answer("Неделя отменена")
+                    self.db.save_order(
+                        s["id"], day,
+                        {"breakfast": False, "lunch": False, "snack": False}
+                    )
+            await q.answer("❌ Заказы на неделю отменены", show_alert=True)
+            return
 
     async def input_id(self, u: Update, c):
         sid = u.message.text.strip()

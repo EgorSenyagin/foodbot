@@ -18,7 +18,7 @@ from telegram.ext import (
 # ================== НАСТРОЙКИ ==================
 class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN")
-    ADMIN_IDS = [6056091640]
+    ADMIN_IDS = [6056091640, 8222801796]
     DATA_DIR = "data"
     ORDERS_FILE = "orders.xlsx"
     STUDENTS_FILE = "students.xlsx"
@@ -352,3 +352,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

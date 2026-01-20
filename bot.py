@@ -28,7 +28,7 @@ class Config:
     ORDERS_FILE = "orders.xlsx"
     STUDENTS_FILE = "students.xlsx"
     SESSIONS_FILE = "sessions.json"
-    DEADLINE_TIME = time(8, 0)
+    DEADLINE_TIME = time(7, 0)
 
 
 # Настройка логгирования
@@ -1445,3 +1445,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+

@@ -6,7 +6,7 @@ import logging
 import asyncio
 import json
 import re
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, date
 from dataclasses import dataclass
 from typing import Dict, Tuple, Optional, List, Any
 from enum import Enum
@@ -21,14 +21,15 @@ from telegram.ext import (
 
 # ================== НАСТРОЙКИ ==================
 class Config:
-    BOT_TOKEN = "8156286210:AAG0WcdjO9vsoLoDVD6O-H0WErClTcjXqEM"
+    BOT_TOKEN = "8156286210:AAG0WcdjO9vsoLoDVD6O-H0WErClTcjXqEM"  # Вставьте токен бота
     ADMIN_IDS = [6056091640]
     DATA_DIR = "data"
     TEMPLATE_FILE = "Табличка для бота по питанию.xlsx"
     ORDERS_FILE = "orders.xlsx"
     STUDENTS_FILE = "students.xlsx"
     SESSIONS_FILE = "sessions.json"
-    DEADLINE_TIME = time(7, 0)
+    DEADLINE_TIME = time(8, 0)  # Дедлайн - 8:00 утра
+    TIMEZONE_OFFSET = 3  # Смещение часового пояса (Москва UTC+3)
 
 
 # Настройка логгирования
@@ -49,6 +50,36 @@ class MealType(Enum):
     BREAKFAST = "breakfast"
     LUNCH = "lunch"
     SNACK = "snack"
+
+
+# ================== УТИЛИТЫ ==================
+def get_current_datetime() -> datetime:
+    """Получает текущее время с учетом часового пояса"""
+    now = datetime.utcnow() + timedelta(hours=Config.TIMEZONE_OFFSET)
+    return now
+
+
+def is_date_locked(target_date: date) -> bool:
+    """Проверяет, заблокирована ли дата для редактирования"""
+    now = get_current_datetime()
+    today = now.date()
+    current_time = now.time()
+
+    logger.info(f"Проверка блокировки: дата={target_date}, сегодня={today}, время={current_time.strftime('%H:%M:%S')}")
+
+    # 1. Если дата уже прошла
+    if target_date < today:
+        logger.info(f"Дата {target_date} прошла - БЛОКИРОВАНО")
+        return True
+
+    # 2. Если сегодня и время после дедлайна (8:00)
+    if target_date == today and current_time >= Config.DEADLINE_TIME:
+        logger.info(
+            f"Сегодня {today}, время {current_time.strftime('%H:%M')} после дедлайна {Config.DEADLINE_TIME.strftime('%H:%M')} - БЛОКИРОВАНО")
+        return True
+
+    logger.info(f"Дата {target_date} доступна для редактирования")
+    return False
 
 
 # ================== МОДЕЛИ ==================
@@ -107,18 +138,6 @@ class TemplateManager:
                     break
 
             if not sheet_structure['date_row']:
-                # Пробуем другие колонки
-                for row in range(1, 10):
-                    for col in range(3, 10):
-                        cell = sheet.cell(row=row, column=col)
-                        if cell.value and self._is_date(cell.value):
-                            sheet_structure['date_row'] = row
-                            logger.info(f"Найдена строка с датами: строка {row}, колонка {col}")
-                            break
-                    if sheet_structure['date_row']:
-                        break
-
-            if not sheet_structure['date_row']:
                 sheet_structure['date_row'] = 3
                 logger.warning(f"Не найдена строка с датами для листа {sheet_name}, используем строку 3")
 
@@ -133,16 +152,7 @@ class TemplateManager:
                     break
 
             if not sheet_structure['students_start_row']:
-                # Ищем по заголовку "ФИО"
-                for row in range(1, 20):
-                    if sheet.cell(row=row, column=2).value == "ФИО":
-                        sheet_structure['students_start_row'] = row + 1
-                        logger.info(f"Начало списка учеников по ФИО: строка {row + 1}")
-                        break
-
-            if not sheet_structure['students_start_row']:
                 sheet_structure['students_start_row'] = 4
-                logger.warning(f"Не найдено начало списка учеников для листа {sheet_name}")
 
             # Парсим учеников
             self._parse_students(sheet, sheet_structure)
@@ -179,25 +189,13 @@ class TemplateManager:
             date_value = self._normalize_date(date_cell.value)
 
             if date_value:
-                # Проверяем, что следующие две колонки - это з/о/п
-                next_col1 = sheet.cell(row=date_row + 1, column=col).value
-                next_col2 = sheet.cell(row=date_row + 1, column=col + 1).value
-                next_col3 = sheet.cell(row=date_row + 1, column=col + 2).value
-
-                # Если в следующих колонках з/о/п или они пустые
-                if (next_col1 in ["з", "З", ""] and
-                        next_col2 in ["о", "О", ""] and
-                        next_col3 in ["п", "П", ""]):
-
-                    sheet_structure['date_columns'][date_value] = {
-                        'breakfast_col': col,
-                        'lunch_col': col + 1,
-                        'snack_col': col + 2
-                    }
-                    logger.debug(f"Найдена дата {date_value} в колонках {col}-{col + 2}")
-                    col += 3  # Переходим к следующей дате
-                else:
-                    col += 1
+                sheet_structure['date_columns'][date_value] = {
+                    'breakfast_col': col,
+                    'lunch_col': col + 1,
+                    'snack_col': col + 2
+                }
+                logger.debug(f"Найдена дата {date_value} в колонках {col}-{col + 2}")
+                col += 3  # Переходим к следующей дате
             else:
                 col += 1
 
@@ -211,10 +209,8 @@ class TemplateManager:
                 student_name = str(name_cell.value).strip()
                 if (student_name and
                         student_name != "Итого:" and
-                        not student_name.startswith("Всего:") and
-                        not student_name.startswith("Итог")):
+                        not student_name.startswith("Всего:")):
                     sheet_structure['students'][student_name] = row
-                    logger.debug(f"Найден ученик: {student_name} в строке {row}")
 
     def _normalize_date(self, value) -> Optional[str]:
         """Приводит дату к стандартному формату YYYY-MM-DD"""
@@ -273,7 +269,6 @@ class TemplateManager:
         """Обновляет заказ в шаблоне"""
         if not self.workbook:
             if not self.load_template():
-                logger.error("Не удалось загрузить шаблон")
                 return False
 
         try:
@@ -281,7 +276,6 @@ class TemplateManager:
             sheet_name, student_row = self.find_student(student_name)
             if not sheet_name or not student_row:
                 logger.error(f"Ученик не найден в шаблоне: {student_name}")
-                logger.info(f"Доступные ученики: {list(self.get_all_students_names())}")
                 return False
 
             # Находим колонки для даты
@@ -293,45 +287,29 @@ class TemplateManager:
             date_info = sheet_structure['date_columns'].get(date_str)
             if not date_info:
                 logger.error(f"Дата {date_str} не найдена в листе {sheet_name}")
-                logger.info(f"Доступные даты в {sheet_name}: {list(sheet_structure['date_columns'].keys())}")
                 return False
 
             sheet = self.workbook[sheet_name]
 
             # Обновляем ячейки
-            breakfast_col = date_info['breakfast_col']
-            lunch_col = date_info['lunch_col']
-            snack_col = date_info['snack_col']
-
-            # Сохраняем текущие значения для отладки
-            old_breakfast = sheet.cell(row=student_row, column=breakfast_col).value
-            old_lunch = sheet.cell(row=student_row, column=lunch_col).value
-            old_snack = sheet.cell(row=student_row, column=snack_col).value
-
             if meals.get('breakfast'):
-                sheet.cell(row=student_row, column=breakfast_col, value="З")
+                sheet.cell(row=student_row, column=date_info['breakfast_col'], value="З")
             else:
-                sheet.cell(row=student_row, column=breakfast_col, value="")
+                sheet.cell(row=student_row, column=date_info['breakfast_col'], value="")
 
             if meals.get('lunch'):
-                sheet.cell(row=student_row, column=lunch_col, value="О")
+                sheet.cell(row=student_row, column=date_info['lunch_col'], value="О")
             else:
-                sheet.cell(row=student_row, column=lunch_col, value="")
+                sheet.cell(row=student_row, column=date_info['lunch_col'], value="")
 
             if meals.get('snack'):
-                sheet.cell(row=student_row, column=snack_col, value="П")
+                sheet.cell(row=student_row, column=date_info['snack_col'], value="П")
             else:
-                sheet.cell(row=student_row, column=snack_col, value="")
+                sheet.cell(row=student_row, column=date_info['snack_col'], value="")
 
             # Сохраняем изменения
             self.workbook.save(self.template_path)
-
             logger.info(f"Шаблон обновлен: {student_name} - {date_str}")
-            logger.debug(f"Старые значения: З={old_breakfast}, О={old_lunch}, П={old_snack}")
-            logger.debug(f"Новые значения: З={'З' if meals.get('breakfast') else ''}, "
-                         f"О={'О' if meals.get('lunch') else ''}, "
-                         f"П={'П' if meals.get('snack') else ''}")
-
             return True
 
         except Exception as e:
@@ -342,24 +320,9 @@ class TemplateManager:
         """Находит ученика в шаблоне"""
         for sheet_name, sheet_structure in self.structure.items():
             for name, row in sheet_structure['students'].items():
-                # Сравниваем без учета регистра и лишних пробелов
                 if name.strip().lower() == student_name.strip().lower():
                     return sheet_name, row
         return None, None
-
-    def get_all_students_names(self) -> List[str]:
-        """Получает список всех имен учеников"""
-        names = []
-        for sheet_structure in self.structure.values():
-            names.extend(sheet_structure['students'].keys())
-        return names
-
-    def get_all_dates(self) -> List[str]:
-        """Получает все даты из шаблона"""
-        dates = set()
-        for sheet_structure in self.structure.values():
-            dates.update(sheet_structure['date_columns'].keys())
-        return sorted(list(dates))
 
 
 # ================== БАЗА ДАННЫХ ==================
@@ -369,7 +332,6 @@ class Database:
         self.template_path = os.path.join(Config.DATA_DIR, Config.TEMPLATE_FILE)
         self.orders_path = os.path.join(Config.DATA_DIR, Config.ORDERS_FILE)
         self.students_path = os.path.join(Config.DATA_DIR, Config.STUDENTS_FILE)
-        self.sessions_path = os.path.join(Config.DATA_DIR, Config.SESSIONS_FILE)
 
         self.template_manager = TemplateManager(self.template_path)
 
@@ -378,24 +340,14 @@ class Database:
 
     def _init_files(self):
         """Инициализация всех файлов"""
-        # Проверяем существование students.xlsx
+        # Проверяем students.xlsx
         if not os.path.exists(self.students_path):
             logger.error(f"Файл {self.students_path} не найден!")
-            print(f"\n❌ ВНИМАНИЕ: Файл {self.students_path} не найден!")
-            print("Создайте файл students.xlsx со следующими колонками:")
-            print("1. ID ученика (числовой, например: 100953)")
-            print("2. ФИО (например: Данильченко Андрей)")
-            print("3. Класс (например: 1А)")
             return
 
         # Загружаем шаблон
         if os.path.exists(self.template_path):
-            if self.template_manager.load_template():
-                logger.info("Шаблон загружен успешно")
-            else:
-                logger.warning("Не удалось загрузить шаблон")
-        else:
-            logger.warning(f"Файл шаблона не найден: {self.template_path}")
+            self.template_manager.load_template()
 
         # Создаем или обновляем orders.xlsx
         self._create_or_update_orders_file()
@@ -403,11 +355,10 @@ class Database:
     def _create_or_update_orders_file(self):
         """Создает или обновляет файл заказов"""
         try:
-            # Загружаем учеников из students.xlsx
+            # Загружаем учеников
             student_wb = load_workbook(self.students_path, data_only=True)
             student_ws = student_wb.active
 
-            # Получаем список учеников
             students = []
             for row in student_ws.iter_rows(min_row=2, values_only=True):
                 if row and row[0] and row[1]:
@@ -417,29 +368,33 @@ class Database:
                         'class': row[2] if len(row) > 2 else ""
                     })
 
-            # Получаем список дат из шаблона или создаем на 30 дней
+            # Получаем даты
             dates = []
             if self.template_manager.workbook:
-                dates = self.template_manager.get_all_dates()
-                logger.info(f"Загружено {len(dates)} дат из шаблона")
-            else:
+                # Получаем все даты из шаблона
+                all_dates = []
+                for sheet_structure in self.template_manager.structure.values():
+                    all_dates.extend(sheet_structure['date_columns'].keys())
+
+                # Убираем дубликаты и сортируем
+                dates = sorted(list(set(all_dates)))
+                logger.info(f"Загружено {len(dates)} уникальных дат из шаблона")
+
+            if not dates:
                 # Создаем даты на 30 рабочих дней вперед
                 today = datetime.now()
                 added = 0
                 date = today
-                while added < 150:
-                    if date.weekday() < 5:  # Только будни
+                while added < 30:
+                    if date.weekday() < 5:
                         dates.append(date.strftime("%Y-%m-%d"))
                         added += 1
                     date += timedelta(days=1)
-                logger.info(f"Создано {len(dates)} дат (30 рабочих дней)")
 
             # Проверяем существует ли orders.xlsx
             if os.path.exists(self.orders_path):
-                # Обновляем существующий файл
                 self._update_orders_file(students, dates)
             else:
-                # Создаем новый файл
                 self._create_new_orders_file(students, dates)
 
         except Exception as e:
@@ -453,8 +408,6 @@ class Database:
 
         # Заголовки
         headers = ["ID", "ФИО", "Класс"]
-
-        # Добавляем колонки для каждой даты и каждого приема пищи
         for date_str in dates:
             headers.extend([
                 f"{date_str}_breakfast",
@@ -464,15 +417,14 @@ class Database:
 
         ws.append(headers)
 
-        # Добавляем строки для учеников
+        # Добавляем учеников
         for student in students:
             student_row = [student['id'], student['name'], student['class']]
-            # Пустые ячейки для заказов
             student_row.extend([""] * (len(dates) * 3))
             ws.append(student_row)
 
         wb.save(self.orders_path)
-        logger.info(f"Создан новый файл orders.xlsx: {len(students)} учеников, {len(dates)} дат")
+        logger.info(f"Создан новый файл orders.xlsx")
 
     def _update_orders_file(self, students: List[Dict], dates: List[str]):
         """Обновляет существующий файл заказов"""
@@ -496,42 +448,24 @@ class Database:
             if not all(header in current_headers for header in date_headers):
                 new_dates.append(date_str)
 
-        # Добавляем новые колонки
         if new_dates:
             for date_str in new_dates:
                 ws.cell(1, ws.max_column + 1, f"{date_str}_breakfast")
                 ws.cell(1, ws.max_column + 1, f"{date_str}_lunch")
                 ws.cell(1, ws.max_column + 1, f"{date_str}_snack")
 
-            # Добавляем пустые ячейки для существующих учеников
+            # Добавляем пустые ячейки
             for row in range(2, ws.max_row + 1):
                 for _ in range(len(new_dates) * 3):
                     ws.cell(row, ws.max_column + 1, "")
 
-        # Проверяем всех учеников из students.xlsx
-        existing_ids = set()
-        for row in range(2, ws.max_row + 1):
-            existing_ids.add(str(ws.cell(row, 1).value))
-
-        # Добавляем новых учеников
-        for student in students:
-            if student['id'] not in existing_ids:
-                student_row = [student['id'], student['name'], student['class']]
-                # Пустые ячейки для заказов
-                for _ in range(ws.max_column - 3):
-                    student_row.append("")
-                ws.append(student_row)
-                logger.info(f"Добавлен новый ученик: {student['name']} (ID: {student['id']})")
-
         wb.save(self.orders_path)
-        logger.info(f"Обновлен файл orders.xlsx: добавлено {len(new_dates)} новых дат")
+        if new_dates:
+            logger.info(f"Добавлено {len(new_dates)} новых дат в orders.xlsx")
 
     def verify_student(self, student_id: str) -> Tuple[bool, Optional[StudentInfo]]:
         """Проверяет ученика по ID"""
         try:
-            if not os.path.exists(self.students_path):
-                return False, None
-
             wb = load_workbook(self.students_path, data_only=True)
             ws = wb.active
 
@@ -551,6 +485,12 @@ class Database:
     def save_order(self, student_id: str, date_str: str, meals: Dict[str, bool]) -> bool:
         """Сохраняет заказ ученика"""
         try:
+            # Проверяем не заблокирована ли дата
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            if is_date_locked(target_date):
+                logger.warning(f"Попытка сохранить заказ на заблокированную дату: {date_str}")
+                return False
+
             # 1. Сохраняем в orders.xlsx
             wb = load_workbook(self.orders_path)
             ws = wb.active
@@ -563,7 +503,6 @@ class Database:
                     break
 
             if not student_row:
-                logger.error(f"Ученик {student_id} не найден в orders.xlsx")
                 return False
 
             # Находим колонки для даты
@@ -582,8 +521,6 @@ class Database:
                         snack_col = col
 
             if not all([breakfast_col, lunch_col, snack_col]):
-                logger.error(f"Не найдены колонки для даты {date_str}")
-                logger.debug(f"Искали в заголовках: {date_str}")
                 return False
 
             # Сохраняем заказы
@@ -596,18 +533,13 @@ class Database:
             # 2. Обновляем шаблон
             ok, student = self.verify_student(student_id)
             if ok and student.full_name:
-                if not self.template_manager.update_order(student.full_name, date_str, meals):
-                    logger.warning(f"Не удалось обновить шаблон для {student.full_name}")
-                else:
-                    logger.info(f"Шаблон успешно обновлен для {student.full_name}")
-            else:
-                logger.error(f"Не удалось получить информацию об ученике {student_id}")
+                self.template_manager.update_order(student.full_name, date_str, meals)
 
             logger.info(f"Заказ сохранен: ID {student_id} - {date_str}")
             return True
 
         except Exception as e:
-            logger.error(f"Ошибка сохранения заказа: {e}", exc_info=True)
+            logger.error(f"Ошибка сохранения заказа: {e}")
             return False
 
     def get_student_orders(self, student_id: str, date_str: str) -> Dict[str, bool]:
@@ -701,38 +633,26 @@ class Database:
             return {meal.value: 0 for meal in MealType}
 
     def get_working_dates(self, count: int = 10) -> List[Dict[str, str]]:
-        """Получает список рабочих дат"""
+        """Получает список рабочих дат с проверкой блокировки"""
         dates = []
-        today = datetime.now()
+        today = get_current_datetime()
         added = 0
         current_date = today
 
         while added < count:
             if current_date.weekday() < 5:  # Только будни
+                date_str = current_date.strftime("%Y-%m-%d")
+                date_obj = current_date.date()
+
                 dates.append({
-                    'date_str': current_date.strftime("%Y-%m-%d"),
-                    'display': f"{current_date.strftime('%d.%m')} ({DAY_NAMES_RU[current_date.weekday()]})"
+                    'date_str': date_str,
+                    'display': f"{current_date.strftime('%d.%m')} ({DAY_NAMES_RU[current_date.weekday()]})",
+                    'is_locked': is_date_locked(date_obj)
                 })
                 added += 1
             current_date += timedelta(days=1)
 
         return dates
-
-    def is_date_locked(self, date_str: str) -> bool:
-        """Проверяет, можно ли редактировать заказ на дату"""
-        try:
-            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-            today = datetime.now().date()
-
-            if date_obj.date() < today:
-                return True
-
-            if date_obj.date() == today and datetime.now().time() >= Config.DEADLINE_TIME:
-                return True
-
-            return False
-        except:
-            return True
 
 
 # ================== КНОПКИ ==================
@@ -748,9 +668,12 @@ class KB:
     def dates(dates_list: List[Dict[str, str]]):
         keyboard = []
         for date_info in dates_list:
+            display = date_info['display']
+            if date_info['is_locked']:
+                display = f"🔒 {display}"
             keyboard.append([
                 InlineKeyboardButton(
-                    date_info['display'],
+                    display,
                     callback_data=f"date|{date_info['date_str']}"
                 )
             ])
@@ -758,20 +681,24 @@ class KB:
         return InlineKeyboardMarkup(keyboard)
 
     @staticmethod
-    def meals(date_str: str, current_orders: Dict[str, bool], is_locked: bool):
+    def meals(date_str: str, current_orders: Dict[str, bool]):
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
         date_display = f"{date_obj.strftime('%d.%m.%Y')} ({DAY_NAMES_RU[date_obj.weekday()]})"
 
+        # Проверяем блокировку
+        is_locked = is_date_locked(date_obj.date())
+
         if is_locked:
-            text = f"📅 {date_display}\n🔒 Редактирование закрыто\n\nТекущий заказ:"
+            text = f"📅 {date_display}\n🔒 Редактирование закрыто (дедлайн: {Config.DEADLINE_TIME.strftime('%H:%M')})\n\nТекущий заказ:"
             buttons = [
-                [InlineKeyboardButton(f"Завтрак: {'✅' if current_orders['breakfast'] else '❌'}", callback_data="view")],
-                [InlineKeyboardButton(f"Обед: {'✅' if current_orders['lunch'] else '❌'}", callback_data="view")],
-                [InlineKeyboardButton(f"Полдник: {'✅' if current_orders['snack'] else '❌'}", callback_data="view")],
+                [InlineKeyboardButton(f"Завтрак: {'✅' if current_orders['breakfast'] else '❌'}",
+                                      callback_data="locked")],
+                [InlineKeyboardButton(f"Обед: {'✅' if current_orders['lunch'] else '❌'}", callback_data="locked")],
+                [InlineKeyboardButton(f"Полдник: {'✅' if current_orders['snack'] else '❌'}", callback_data="locked")],
                 [InlineKeyboardButton("⬅️ К датам", callback_data="back_dates")]
             ]
         else:
-            text = f"📅 {date_display}\n✅ Можно редактировать\n\nВыберите питание:"
+            text = f"📅 {date_display}\n✅ Можно редактировать (до {Config.DEADLINE_TIME.strftime('%H:%M')})\n\nВыберите питание:"
             buttons = [
                 [
                     InlineKeyboardButton(
@@ -793,7 +720,7 @@ class KB:
                 ],
                 [
                     InlineKeyboardButton("✅ Всё на день", callback_data=f"all_day|{date_str}"),
-                    InlineKeyboardButton("❌ Отменить на день", callback_data=f"none_day|{date_str}")
+                    InlineKeyboardButton("❌ Ничего", callback_data=f"none_day|{date_str}")
                 ],
                 [
                     InlineKeyboardButton("📅 Вся неделя", callback_data=f"all_week|{date_str}"),
@@ -817,9 +744,6 @@ class KB:
             buttons.append([
                 InlineKeyboardButton("🔄 Обновить данные", callback_data="refresh_data")
             ])
-            # buttons.append([
-            #     InlineKeyboardButton("🐛 Отладка", callback_data="debug_info")
-            # ])
         buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_main")])
         return InlineKeyboardMarkup(buttons)
 
@@ -830,16 +754,20 @@ class FoodBot:
 
     def __init__(self):
         self.db = Database()
-        self.user_sessions = {}  # user_id -> session_data
+        self.user_sessions = {}
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
         user_id = update.effective_user.id
         self.user_sessions[user_id] = {'state': 'main'}
 
+        now = get_current_datetime()
+
         await update.message.reply_text(
-            "🏫 **Система заказа школьного питания**\n\n"
-            "Выберите действие:",
+            f"🏫 **Система заказа школьного питания**\n\n"
+            f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
+            # f"⏳ Дедлайн редактирования: {Config.DEADLINE_TIME.strftime('%H:%M')}\n\n"
+            f"Выберите действие:",
             parse_mode='Markdown',
             reply_markup=KB.main()
         )
@@ -852,11 +780,11 @@ class FoodBot:
         user_id = query.from_user.id
         data = query.data
 
-        # Обработка основных команд
         if data == "input_id":
             await query.edit_message_text(
                 "🔑 **Введите ID ученика**\n\n"
                 "ID можно получить у классного руководителя.\n"
+                # "Пример ID: 100953, 572477, 565546 и т.д.\n\n"
                 "**Введите ID:**",
                 parse_mode='Markdown'
             )
@@ -871,15 +799,15 @@ class FoodBot:
                 return
 
             # Получаем статистику
-            today = datetime.now().strftime("%Y-%m-%d")
-            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            today = get_current_datetime().strftime("%Y-%m-%d")
+            tomorrow = (get_current_datetime() + timedelta(days=1)).strftime("%Y-%m-%d")
 
             today_stats = self.db.count_for_date(today)
             tomorrow_stats = self.db.count_for_date(tomorrow)
 
             text = (
                 "📊 **Статистика заказов**\n\n"
-                f"**Сегодня ({datetime.now().strftime('%d.%m')}):**\n"
+                f"**Сегодня ({get_current_datetime().strftime('%d.%m')}):**\n"
                 f"🍳 Завтрак: {today_stats['breakfast']}\n"
                 f"🍲 Обед: {today_stats['lunch']}\n"
                 f"🥪 Полдник: {today_stats['snack']}\n\n"
@@ -905,8 +833,6 @@ class FoodBot:
                     filename="orders.xlsx",
                     caption="📊 Файл заказов"
                 )
-            else:
-                await query.message.reply_text("❌ Файл orders.xlsx не найден")
 
         elif data == "download_template":
             if user_id not in Config.ADMIN_IDS:
@@ -918,8 +844,6 @@ class FoodBot:
                     filename=Config.TEMPLATE_FILE,
                     caption="📋 Основной шаблон"
                 )
-            else:
-                await query.message.reply_text(f"❌ Файл {Config.TEMPLATE_FILE} не найден")
 
         elif data == "refresh_data":
             if user_id not in Config.ADMIN_IDS:
@@ -939,23 +863,17 @@ class FoodBot:
                     context
                 )
 
-        elif data == "debug_info":
-            if user_id not in Config.ADMIN_IDS:
-                return
-
-            debug_text = self._get_debug_info()
-            await query.message.reply_text(
-                debug_text,
-                parse_mode='Markdown'
-            )
-
         elif data == "back_main":
             if user_id in self.user_sessions:
                 self.user_sessions[user_id] = {'state': 'main'}
 
+            now = get_current_datetime()
             await query.edit_message_text(
-                "🏫 **Система заказа школьного питания**\n\n"
-                "Выберите действие:",
+                f"🏫 **Система заказа школьного питания**\n\n"
+                # f"⏰ Текущее время: {now.strftime('%H:%M:%S')}\n"
+                f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
+                # f"⏳ Дедлайн редактирования: {Config.DEADLINE_TIME.strftime('%H:%M')}\n\n"
+                f"Выберите действие:",
                 parse_mode='Markdown',
                 reply_markup=KB.main()
             )
@@ -974,7 +892,7 @@ class FoodBot:
             await query.edit_message_text(
                 f"👤 **{student_info['student_name']}**\n"
                 f"🏫 Класс: {student_info['class_name']}\n\n"
-                f"Выберите дату:",
+                f"Выберите дату (🔒 - редактирование закрыто):",
                 parse_mode='Markdown',
                 reply_markup=KB.dates(dates)
             )
@@ -992,15 +910,21 @@ class FoodBot:
 
             student_info = self.user_sessions[user_id]
             orders = self.db.get_student_orders(student_info['student_id'], date_str)
-            is_locked = self.db.is_date_locked(date_str)
 
             await query.edit_message_text(
                 f"📅 **{datetime.strptime(date_str, '%Y-%m-%d').strftime('%d.%m.%Y')}**\n"
                 f"👤 {student_info['student_name']}\n"
-                f"🏫 {student_info['class_name']}\n\n"
-                f"{'🔒 Редактирование закрыто' if is_locked else '✅ Можно редактировать'}",
+                f"🏫 {student_info['class_name']}",
                 parse_mode='Markdown',
-                reply_markup=KB.meals(date_str, orders, is_locked)
+                reply_markup=KB.meals(date_str, orders)
+            )
+            return self.MEALS
+
+        elif data == "locked":
+            await self._send_temp_message(
+                query.message.chat_id,
+                "⛔ Редактирование заказов на эту дату закрыто",
+                context
             )
             return self.MEALS
 
@@ -1013,10 +937,11 @@ class FoodBot:
             student_info = self.user_sessions[user_id]
 
             # Проверяем можно ли редактировать
-            if self.db.is_date_locked(date_str):
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            if is_date_locked(target_date):
                 await self._send_temp_message(
                     query.message.chat_id,
-                    "⛔ Редактирование заказов на эту дату закрыто",
+                    f"⛔ Редактирование заказов на эту дату закрыто (дедлайн: {Config.DEADLINE_TIME.strftime('%H:%M')})",
                     context
                 )
                 return self.MEALS
@@ -1028,7 +953,7 @@ class FoodBot:
             # Сохраняем
             if self.db.save_order(student_info['student_id'], date_str, orders):
                 await query.edit_message_reply_markup(
-                    KB.meals(date_str, orders, False)
+                    KB.meals(date_str, orders)
                 )
                 await self._send_temp_message(
                     query.message.chat_id,
@@ -1048,10 +973,12 @@ class FoodBot:
             if user_id not in self.user_sessions or 'student_id' not in self.user_sessions[user_id]:
                 return
 
-            if self.db.is_date_locked(date_str):
+            # Проверяем можно ли редактировать
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            if is_date_locked(target_date):
                 await self._send_temp_message(
                     query.message.chat_id,
-                    "⛔ Редактирование заказов на эту дату закрыто",
+                    f"⛔ Редактирование заказов на эту дату закрыто (дедлайн: {Config.DEADLINE_TIME.strftime('%H:%M')})",
                     context
                 )
                 return self.MEALS
@@ -1061,7 +988,7 @@ class FoodBot:
 
             if self.db.save_order(self.user_sessions[user_id]['student_id'], date_str, orders):
                 await query.edit_message_reply_markup(
-                    KB.meals(date_str, orders, False)
+                    KB.meals(date_str, orders)
                 )
                 await self._send_temp_message(
                     query.message.chat_id,
@@ -1075,10 +1002,12 @@ class FoodBot:
             if user_id not in self.user_sessions or 'student_id' not in self.user_sessions[user_id]:
                 return
 
-            if self.db.is_date_locked(date_str):
+            # Проверяем можно ли редактировать
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            if is_date_locked(target_date):
                 await self._send_temp_message(
                     query.message.chat_id,
-                    "⛔ Редактирование заказов на эту дату закрыто",
+                    f"⛔ Редактирование заказов на эту дату закрыто (дедлайн: {Config.DEADLINE_TIME.strftime('%H:%M')})",
                     context
                 )
                 return self.MEALS
@@ -1088,7 +1017,7 @@ class FoodBot:
 
             if self.db.save_order(self.user_sessions[user_id]['student_id'], date_str, orders):
                 await query.edit_message_reply_markup(
-                    KB.meals(date_str, orders, False)
+                    KB.meals(date_str, orders)
                 )
                 await self._send_temp_message(
                     query.message.chat_id,
@@ -1112,7 +1041,8 @@ class FoodBot:
                 week_date = monday + timedelta(days=i)
                 week_date_str = week_date.strftime("%Y-%m-%d")
 
-                if self.db.is_date_locked(week_date_str):
+                # Пропускаем заблокированные даты
+                if is_date_locked(week_date.date()):
                     continue
 
                 total += 1
@@ -1133,7 +1063,7 @@ class FoodBot:
                 self.user_sessions[user_id]['student_id'], date_str
             )
             await query.edit_message_reply_markup(
-                KB.meals(date_str, current_orders, self.db.is_date_locked(date_str))
+                KB.meals(date_str, current_orders)
             )
 
         elif data.startswith("clear_week|"):
@@ -1152,7 +1082,8 @@ class FoodBot:
                 week_date = monday + timedelta(days=i)
                 week_date_str = week_date.strftime("%Y-%m-%d")
 
-                if self.db.is_date_locked(week_date_str):
+                # Пропускаем заблокированные даты
+                if is_date_locked(week_date.date()):
                     continue
 
                 total += 1
@@ -1173,7 +1104,7 @@ class FoodBot:
                 self.user_sessions[user_id]['student_id'], date_str
             )
             await query.edit_message_reply_markup(
-                KB.meals(date_str, current_orders, self.db.is_date_locked(date_str))
+                KB.meals(date_str, current_orders)
             )
 
     async def input_id_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1221,7 +1152,7 @@ class FoodBot:
             f"👤 **{student_info.full_name}**\n"
             f"🏫 Класс: {student_info.class_name}\n"
             f"🔑 ID: {student_id}\n\n"
-            f"Выберите дату:",
+            f"Выберите дату (🔒 - редактирование закрыто):",
             parse_mode='Markdown',
             reply_markup=KB.dates(dates)
         )
@@ -1249,105 +1180,42 @@ class FoodBot:
         except:
             pass
 
-    def _get_debug_info(self) -> str:
-        """Получает отладочную информацию"""
-        debug_info = "🐛 **Отладочная информация**\n\n"
+    async def time_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда для проверки времени"""
+        now = get_current_datetime()
+        deadline_time = Config.DEADLINE_TIME
 
-        # Информация о файлах
-        debug_info += "📁 **Файлы:**\n"
-        files_info = [
-            (self.db.template_path, "Шаблон"),
-            (self.db.orders_path, "Заказы"),
-            (self.db.students_path, "Ученики")
-        ]
+        message = (
+            f"🕐 **Текущее время:** {now.strftime('%H:%M:%S')}\n"
+            f"📅 **Дата:** {now.strftime('%d.%m.%Y')}\n"
+            f"⏰ **Дедлайн редактирования:** {deadline_time.strftime('%H:%M')}\n"
+            f"🔒 **Сегодняшний день заблокирован:** {'Да' if now.time() >= deadline_time else 'Нет'}\n"
+            f"📝 **Можно редактировать завтра:** Да"
+        )
 
-        for file_path, name in files_info:
-            if os.path.exists(file_path):
-                size = os.path.getsize(file_path) / 1024
-                debug_info += f"✅ {name}: {os.path.basename(file_path)} ({size:.1f} KB)\n"
-            else:
-                debug_info += f"❌ {name}: файл не найден\n"
+        await update.message.reply_text(message, parse_mode='Markdown')
 
-        # Информация о шаблоне
-        debug_info += "\n📋 **Шаблон:**\n"
-        if self.db.template_manager.workbook:
-            sheets = self.db.template_manager.workbook.sheetnames
-            debug_info += f"Листов: {len(sheets)}\n"
-
-            # Даты из шаблона
-            dates = self.db.template_manager.get_all_dates()
-            if dates:
-                debug_info += f"Даты: {len(dates)} найдено\n"
-                debug_info += f"Пример: {dates[0]} ... {dates[-1]}\n"
-            else:
-                debug_info += "❌ Даты не найдены\n"
-
-            # Ученики из шаблона
-            student_names = self.db.template_manager.get_all_students_names()
-            debug_info += f"Ученики в шаблоне: {len(student_names)}\n"
-        else:
-            debug_info += "❌ Не загружен\n"
-
-        # Информация о students.xlsx
-        debug_info += "\n👥 **База учеников:**\n"
-        if os.path.exists(self.db.students_path):
-            try:
-                wb = load_workbook(self.db.students_path, data_only=True)
-                ws = wb.active
-                student_count = ws.max_row - 1
-                debug_info += f"Учеников: {student_count}\n"
-
-                # Примеры ID
-                sample_ids = []
-                for row in range(2, min(6, ws.max_row + 1)):
-                    student_id = ws.cell(row=row, column=1).value
-                    if student_id:
-                        sample_ids.append(str(student_id))
-
-                if sample_ids:
-                    debug_info += f"Примеры ID: {', '.join(sample_ids)}\n"
-            except Exception as e:
-                debug_info += f"❌ Ошибка: {str(e)}\n"
-        else:
-            debug_info += "❌ Файл не найден\n"
-
-        # Информация о orders.xlsx
-        debug_info += "\n📊 **Файл заказов:**\n"
-        if os.path.exists(self.db.orders_path):
-            try:
-                wb = load_workbook(self.db.orders_path, data_only=True)
-                ws = wb.active
-                order_count = ws.max_row - 1
-                date_count = (ws.max_column - 3) // 3
-                debug_info += f"Учеников: {order_count}, Дат: {date_count}\n"
-            except Exception as e:
-                debug_info += f"❌ Ошибка: {str(e)}\n"
-        else:
-            debug_info += "❌ Файл не найден\n"
-
-        # Активные сессии
-        debug_info += f"\n👤 **Активные сессии:** {len(self.user_sessions)}\n"
-
-        return debug_info
-
-    async def admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Административные команды"""
+    async def test_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Тест дедлайна (только для админов)"""
         if update.effective_user.id not in Config.ADMIN_IDS:
-            await update.message.reply_text("❌ У вас нет прав для этой команды")
             return
 
-        command = update.message.text.lower()
+        now = get_current_datetime()
+        test_dates = [
+            (now.date(), "Сегодня"),
+            (now.date() + timedelta(days=1), "Завтра"),
+            (now.date() - timedelta(days=1), "Вчера"),
+        ]
 
-        if command == "/reload":
-            # Перезагружаем шаблон
-            if self.db.template_manager.load_template():
-                await update.message.reply_text("✅ Шаблон перезагружен")
-            else:
-                await update.message.reply_text("❌ Ошибка перезагрузки шаблона")
+        results = []
+        for test_date, name in test_dates:
+            locked = is_date_locked(test_date)
+            results.append(f"{name} ({test_date}): {'🔒 ЗАБЛОКИРОВАНО' if locked else '✅ ДОСТУПНО'}")
 
-        elif command == "/check":
-            debug_info = self._get_debug_info()
-            await update.message.reply_text(debug_info, parse_mode='Markdown')
+        await update.message.reply_text(
+            "🧪 **Тест дедлайна**\n\n" + "\n".join(results),
+            parse_mode='Markdown'
+        )
 
 
 # ================== ЗАПУСК ==================
@@ -1358,7 +1226,6 @@ def main():
         print("=" * 50)
         print("ВНИМАНИЕ: Не указан токен бота!")
         print("Добавьте в код строку: Config.BOT_TOKEN = 'ВАШ_ТОКЕН'")
-        print("Получить токен можно у @BotFather в Telegram")
         print("=" * 50)
         return
 
@@ -1371,7 +1238,8 @@ def main():
     # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", bot.start))
     application.add_handler(CommandHandler("cancel", bot.cancel))
-    application.add_handler(CommandHandler(["reload", "check"], bot.admin_command))
+    application.add_handler(CommandHandler("time", bot.time_command))
+    application.add_handler(CommandHandler("test", bot.test_deadline))
 
     # Добавляем ConversationHandler для ввода ID
     conv_handler = ConversationHandler(
@@ -1403,36 +1271,31 @@ def main():
 
     # Запускаем бота
     logger.info("🤖 Бот запускается...")
+
     print("\n" + "=" * 50)
     print("🏫 Школьный бот питания")
     print("=" * 50)
-    print(f"Папка с данными: {Config.DATA_DIR}/")
-    print(f"Файл учеников: {Config.STUDENTS_FILE}")
-    print(f"Файл заказов: {Config.ORDERS_FILE}")
-    print(f"Шаблон: {Config.TEMPLATE_FILE}")
+    print(f"Текущее время: {get_current_datetime().strftime('%H:%M:%S')}")
+    print(f"Дедлайн редактирования: {Config.DEADLINE_TIME.strftime('%H:%M')}")
+    print(f"Часовой пояс: UTC+{Config.TIMEZONE_OFFSET}")
     print("=" * 50)
-    print("Проверка файлов...")
 
-    # Проверяем необходимые файлы
+    # Проверяем файлы
     required_files = [
-        (Config.STUDENTS_FILE, "students.xlsx с учениками"),
+        (bot.db.students_path, "students.xlsx"),
+        (bot.db.template_path, "шаблон.xlsx")
     ]
 
-    all_ok = True
-    for file_name, description in required_files:
-        file_path = os.path.join(Config.DATA_DIR, file_name)
+    for file_path, name in required_files:
         if os.path.exists(file_path):
-            print(f"✅ {file_name}: найден")
+            print(f"✅ {name}: найден")
         else:
-            print(f"❌ {file_name}: не найден ({description})")
-            all_ok = False
-
-    if not all_ok:
-        print("\n⚠️  Некоторые файлы не найдены!")
-        print("Проверьте папку data/ и добавьте необходимые файлы")
+            print(f"⚠️  {name}: не найден")
 
     print("=" * 50)
-    print("Бот запущен. Нажмите Ctrl+C для остановки.")
+    print("Команды для проверки:")
+    print("/time - текущее время и статус дедлайна")
+    print("/test - тест дедлайна (только для админов)")
     print("=" * 50 + "\n")
 
     try:
@@ -1443,6 +1306,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
-

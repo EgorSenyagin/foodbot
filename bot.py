@@ -17,11 +17,11 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, ConversationHandler, filters, ContextTypes
 )
-BOT_TOKEN = ""
+
 
 # ================== НАСТРОЙКИ ==================
 class Config:
-   
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
     ADMIN_IDS = [6056091640]
     DATA_DIR = "data"
     TEMPLATE_FILE = "Табличка для бота по питанию.xlsx"
@@ -1307,4 +1307,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

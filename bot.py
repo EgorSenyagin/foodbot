@@ -22,14 +22,17 @@ from telegram.ext import (
 # ================== НАСТРОЙКИ ==================
 class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN")
+
     ADMIN_IDS = [6056091640]
     DATA_DIR = "data"
     TEMPLATE_FILE = "Табличка для бота по питанию.xlsx"
     ORDERS_FILE = "orders.xlsx"
     STUDENTS_FILE = "students.xlsx"
     SESSIONS_FILE = "sessions.json"
+    REMINDERS_FILE = "reminders.json"
     DEADLINE_TIME = time(8, 0)  # Дедлайн - 8:00 утра
-    TIMEZONE_OFFSET = 3  # Смещение часового пояса (Москва UTC+3)
+    REMINDER_TIME = time(7, 0)  # Напоминание в 7:00
+    TIMEZONE_OFFSET = 2  # Смещение часового пояса (Москва UTC+3)
 
 
 # Настройка логгирования
@@ -88,6 +91,52 @@ class StudentInfo:
     student_id: str
     full_name: str
     class_name: str
+
+
+# ================== МЕНЕДЖЕР НАПОМИНАНИЙ ==================
+class ReminderManager:
+    def __init__(self, reminders_path: str):
+        self.reminders_path = reminders_path
+        self.reminders = self._load_reminders()
+
+    def _load_reminders(self) -> Dict:
+        """Загружает настройки напоминаний"""
+        if os.path.exists(self.reminders_path):
+            try:
+                with open(self.reminders_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Ошибка загрузки напоминаний: {e}")
+        return {}
+
+    def _save_reminders(self):
+        """Сохраняет настройки напоминаний"""
+        try:
+            with open(self.reminders_path, 'w', encoding='utf-8') as f:
+                json.dump(self.reminders, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения напоминаний: {e}")
+
+    def get_user_reminder(self, user_id: int) -> bool:
+        """Получает статус напоминания для пользователя"""
+        return self.reminders.get(str(user_id), False)
+
+    def set_user_reminder(self, user_id: int, enabled: bool):
+        """Устанавливает статус напоминания для пользователя"""
+        self.reminders[str(user_id)] = enabled
+        self._save_reminders()
+        logger.info(f"Напоминание для пользователя {user_id}: {'включено' if enabled else 'выключено'}")
+
+    def get_all_users_with_reminders(self) -> List[int]:
+        """Получает список всех пользователей с включенными напоминаниями"""
+        return [int(user_id) for user_id, enabled in self.reminders.items() if enabled]
+
+    def toggle_user_reminder(self, user_id: int) -> bool:
+        """Переключает статус напоминания для пользователя"""
+        current = self.get_user_reminder(user_id)
+        new_state = not current
+        self.set_user_reminder(user_id, new_state)
+        return new_state
 
 
 # ================== МЕНЕДЖЕР ШАБЛОНА ==================
@@ -332,8 +381,10 @@ class Database:
         self.template_path = os.path.join(Config.DATA_DIR, Config.TEMPLATE_FILE)
         self.orders_path = os.path.join(Config.DATA_DIR, Config.ORDERS_FILE)
         self.students_path = os.path.join(Config.DATA_DIR, Config.STUDENTS_FILE)
+        self.reminders_path = os.path.join(Config.DATA_DIR, Config.REMINDERS_FILE)
 
         self.template_manager = TemplateManager(self.template_path)
+        self.reminder_manager = ReminderManager(self.reminders_path)
 
         # Инициализация файлов
         self._init_files()
@@ -654,15 +705,36 @@ class Database:
 
         return dates
 
+    def check_tomorrow_order(self, student_id: str) -> bool:
+        """Проверяет, есть ли заказ на завтра"""
+        tomorrow = (get_current_datetime() + timedelta(days=1)).strftime("%Y-%m-%d")
+        orders = self.get_student_orders(student_id, tomorrow)
+
+        # Проверяем, есть ли хотя бы один заказ
+        return any(orders.values())
+
+    def get_user_student_id(self, user_id: int, user_sessions: Dict) -> Optional[str]:
+        """Получает ID ученика для пользователя"""
+        if user_id in user_sessions and 'student_id' in user_sessions[user_id]:
+            return user_sessions[user_id]['student_id']
+        return None
+
 
 # ================== КНОПКИ ==================
 class KB:
     @staticmethod
-    def main():
-        return InlineKeyboardMarkup([
+    def main(has_reminder: bool = False):
+        buttons = [
             [InlineKeyboardButton("🔑 Ввести ID ученика", callback_data="input_id")],
-            [InlineKeyboardButton("📊 Статистика", callback_data="stats")]
-        ])
+            [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+            [
+                InlineKeyboardButton(
+                    f"{'🔔' if has_reminder else '🔕'} Напоминания: {'ВКЛ' if has_reminder else 'ВЫКЛ'}",
+                    callback_data="toggle_reminder"
+                )
+            ]
+        ]
+        return InlineKeyboardMarkup(buttons)
 
     @staticmethod
     def dates(dates_list: List[Dict[str, str]]):
@@ -752,9 +824,24 @@ class KB:
 class FoodBot:
     INPUT_ID, DATES, MEALS = range(3)
 
-    def __init__(self):
+    def __init__(self, application: Application):
         self.db = Database()
         self.user_sessions = {}
+        self.application = application
+        self._setup_reminder_job()
+
+    def _setup_reminder_job(self):
+        """Настраивает задачу напоминаний"""
+        try:
+            # Запускаем задачу напоминаний
+            self.application.job_queue.run_repeating(
+                self.send_reminders,
+                interval=timedelta(minutes=60),  # Проверяем каждый час
+                first=10  # Начинаем через 10 секунд после запуска
+            )
+            logger.info("Задача напоминаний настроена")
+        except Exception as e:
+            logger.error(f"Ошибка настройки задачи напоминаний: {e}")
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
@@ -762,15 +849,71 @@ class FoodBot:
         self.user_sessions[user_id] = {'state': 'main'}
 
         now = get_current_datetime()
+        has_reminder = self.db.reminder_manager.get_user_reminder(user_id)
 
         await update.message.reply_text(
             f"🏫 **Система заказа школьного питания**\n\n"
             f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
-            # f"⏳ Дедлайн редактирования: {Config.DEADLINE_TIME.strftime('%H:%M')}\n\n"
+            f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
             f"Выберите действие:",
             parse_mode='Markdown',
-            reply_markup=KB.main()
+            reply_markup=KB.main(has_reminder)
         )
+
+    async def send_reminders(self, context: ContextTypes.DEFAULT_TYPE):
+        """Отправляет напоминания о заказе еды"""
+        try:
+            now = get_current_datetime()
+            current_time = now.time()
+
+            # Проверяем, что сейчас 7:00 (или около того)
+            if current_time.hour == Config.REMINDER_TIME.hour and current_time.minute == Config.REMINDER_TIME.minute:
+                logger.info(f"Проверка напоминаний в {current_time.strftime('%H:%M')}")
+
+                # Получаем всех пользователей с включенными напоминаниями
+                users_with_reminders = self.db.reminder_manager.get_all_users_with_reminders()
+
+                for user_id in users_with_reminders:
+                    try:
+                        # Получаем ID ученика для пользователя
+                        student_id = self.db.get_user_student_id(user_id, self.user_sessions)
+
+                        if student_id:
+                            # Проверяем, есть ли заказ на завтра
+                            has_order = self.db.check_tomorrow_order(student_id)
+
+                            if not has_order:
+                                # Получаем информацию об ученике
+                                ok, student_info = self.db.verify_student(student_id)
+
+                                if ok:
+                                    tomorrow = (now + timedelta(days=1)).strftime("%d.%m.%Y")
+                                    message = (
+                                        f"🔔 **Напоминание о заказе питания**\n\n"
+                                        f"👤 {student_info.full_name}\n"
+                                        f"🏫 {student_info.class_name}\n\n"
+                                        f"📅 **На завтра ({tomorrow}) у вас нет заказа!**\n\n"
+                                        f"⏰ Дедлайн заказа: {Config.DEADLINE_TIME.strftime('%H:%M')}\n"
+                                        f"⚡ Успейте сделать заказ до дедлайна!"
+                                    )
+
+                                    await context.bot.send_message(
+                                        chat_id=user_id,
+                                        text=message,
+                                        parse_mode='Markdown'
+                                    )
+                                    logger.info(f"Отправлено напоминание пользователю {user_id}")
+                        else:
+                            # Если у пользователя нет активной сессии с учеником
+                            logger.debug(f"У пользователя {user_id} нет активной сессии с учеником")
+
+                    except Exception as e:
+                        logger.error(f"Ошибка отправки напоминания пользователю {user_id}: {e}")
+
+                logger.info(f"Напоминания отправлены для {len(users_with_reminders)} пользователей")
+
+        except Exception as e:
+            logger.error(f"Ошибка в задаче напоминаний: {e}")
 
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик нажатий на кнопки"""
@@ -784,17 +927,32 @@ class FoodBot:
             await query.edit_message_text(
                 "🔑 **Введите ID ученика**\n\n"
                 "ID можно получить у классного руководителя.\n"
-                # "Пример ID: 100953, 572477, 565546 и т.д.\n\n"
                 "**Введите ID:**",
                 parse_mode='Markdown'
             )
             return self.INPUT_ID
 
+        elif data == "toggle_reminder":
+            # Переключаем напоминание
+            new_state = self.db.reminder_manager.toggle_user_reminder(user_id)
+
+            now = get_current_datetime()
+            await query.edit_message_text(
+                f"🏫 **Система заказа школьного питания**\n\n"
+                f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
+                f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if new_state else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
+                f"{'✅ Напоминания включены! Буду напоминать в 7:00 утра.' if new_state else '❌ Напоминания отключены.'}\n\n"
+                f"Выберите действие:",
+                parse_mode='Markdown',
+                reply_markup=KB.main(new_state)
+            )
+            return
+
         elif data == "stats":
             if user_id not in Config.ADMIN_IDS:
                 await query.edit_message_text(
                     "❌ У вас нет доступа к статистике",
-                    reply_markup=KB.main()
+                    reply_markup=KB.main(self.db.reminder_manager.get_user_reminder(user_id))
                 )
                 return
 
@@ -868,21 +1026,22 @@ class FoodBot:
                 self.user_sessions[user_id] = {'state': 'main'}
 
             now = get_current_datetime()
+            has_reminder = self.db.reminder_manager.get_user_reminder(user_id)
+
             await query.edit_message_text(
                 f"🏫 **Система заказа школьного питания**\n\n"
-                # f"⏰ Текущее время: {now.strftime('%H:%M:%S')}\n"
                 f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
-                # f"⏳ Дедлайн редактирования: {Config.DEADLINE_TIME.strftime('%H:%M')}\n\n"
+                f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
                 f"Выберите действие:",
                 parse_mode='Markdown',
-                reply_markup=KB.main()
+                reply_markup=KB.main(has_reminder)
             )
 
         elif data == "back_dates":
             if user_id not in self.user_sessions or 'student_id' not in self.user_sessions[user_id]:
                 await query.edit_message_text(
                     "❌ Сессия устарела. Начните заново.",
-                    reply_markup=KB.main()
+                    reply_markup=KB.main(self.db.reminder_manager.get_user_reminder(user_id))
                 )
                 return
 
@@ -904,7 +1063,7 @@ class FoodBot:
             if user_id not in self.user_sessions or 'student_id' not in self.user_sessions[user_id]:
                 await query.edit_message_text(
                     "❌ Сессия устарела. Начните заново.",
-                    reply_markup=KB.main()
+                    reply_markup=KB.main(self.db.reminder_manager.get_user_reminder(user_id))
                 )
                 return
 
@@ -1165,9 +1324,10 @@ class FoodBot:
         if user_id in self.user_sessions:
             self.user_sessions[user_id] = {'state': 'main'}
 
+        has_reminder = self.db.reminder_manager.get_user_reminder(user_id)
         await update.message.reply_text(
             "❌ Действие отменено",
-            reply_markup=KB.main()
+            reply_markup=KB.main(has_reminder)
         )
         return ConversationHandler.END
 
@@ -1184,13 +1344,14 @@ class FoodBot:
         """Команда для проверки времени"""
         now = get_current_datetime()
         deadline_time = Config.DEADLINE_TIME
+        reminder_time = Config.REMINDER_TIME
 
         message = (
             f"🕐 **Текущее время:** {now.strftime('%H:%M:%S')}\n"
             f"📅 **Дата:** {now.strftime('%d.%m.%Y')}\n"
             f"⏰ **Дедлайн редактирования:** {deadline_time.strftime('%H:%M')}\n"
+            f"🔔 **Время напоминаний:** {reminder_time.strftime('%H:%M')}\n"
             f"🔒 **Сегодняшний день заблокирован:** {'Да' if now.time() >= deadline_time else 'Нет'}\n"
-            f"📝 **Можно редактировать завтра:** Да"
         )
 
         await update.message.reply_text(message, parse_mode='Markdown')
@@ -1217,6 +1378,22 @@ class FoodBot:
             parse_mode='Markdown'
         )
 
+    async def reminder_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Информация о напоминаниях"""
+        user_id = update.effective_user.id
+        has_reminder = self.db.reminder_manager.get_user_reminder(user_id)
+
+        message = (
+            f"🔔 **Информация о напоминаниях**\n\n"
+            f"📅 **Статус:** {'🔔 ВКЛЮЧЕНЫ' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n"
+            f"⏰ **Время напоминания:** {Config.REMINDER_TIME.strftime('%H:%M')}\n"
+            f"⏳ **Что проверяется:** Заказ на завтрашний день\n"
+            f"📝 **Условие:** Напоминание приходит, если на завтра нет ни одного заказа\n\n"
+            f"ℹ️ Напоминания можно включить/выключить в главном меню"
+        )
+
+        await update.message.reply_text(message, parse_mode='Markdown')
+
 
 # ================== ЗАПУСК ==================
 def main():
@@ -1229,17 +1406,22 @@ def main():
         print("=" * 50)
         return
 
-    # Создаем приложение
-    application = Application.builder().token(Config.BOT_TOKEN).build()
+    # Создаем приложение С JobQueue
+    application = (
+        Application.builder()
+        .token(Config.BOT_TOKEN)
+        .build()
+    )
 
-    # Создаем бота
-    bot = FoodBot()
+    # Создаем бота и передаем ему application
+    bot = FoodBot(application)
 
     # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", bot.start))
     application.add_handler(CommandHandler("cancel", bot.cancel))
     application.add_handler(CommandHandler("time", bot.time_command))
     application.add_handler(CommandHandler("test", bot.test_deadline))
+    application.add_handler(CommandHandler("reminder", bot.reminder_info))
 
     # Добавляем ConversationHandler для ввода ID
     conv_handler = ConversationHandler(
@@ -1277,6 +1459,7 @@ def main():
     print("=" * 50)
     print(f"Текущее время: {get_current_datetime().strftime('%H:%M:%S')}")
     print(f"Дедлайн редактирования: {Config.DEADLINE_TIME.strftime('%H:%M')}")
+    print(f"Время напоминаний: {Config.REMINDER_TIME.strftime('%H:%M')}")
     print(f"Часовой пояс: UTC+{Config.TIMEZONE_OFFSET}")
     print("=" * 50)
 
@@ -1296,6 +1479,7 @@ def main():
     print("Команды для проверки:")
     print("/time - текущее время и статус дедлайна")
     print("/test - тест дедлайна (только для админов)")
+    print("/reminder - информация о напоминаниях")
     print("=" * 50 + "\n")
 
     try:
@@ -1307,5 +1491,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

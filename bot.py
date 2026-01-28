@@ -22,8 +22,8 @@ from telegram.ext import (
 # ================== НАСТРОЙКИ ==================
 class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN")  # Замените на ваш токен или установите переменную окружения
-    if not BOT_TOKEN:
-        BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Замените на ваш токен
+    # if not BOT_TOKEN:
+    #     BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Замените на ваш токен
 
     ADMIN_IDS = [6056091640]  # Замените на ваш ID
     DATA_DIR = "data"
@@ -1565,3 +1565,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

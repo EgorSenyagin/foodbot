@@ -879,7 +879,8 @@ class FoodBot:
                 for user_id in users_with_reminders:
                     try:
                         # Получаем ID ученика для пользователя
-                        student_id = self.db.get_user_student_id(user_id, self.user_sessions)
+                        student_id = self.db.get_user_student_id_from_storage(user_id)
+
 
                         if student_id:
                             # Проверяем, есть ли заказ на завтра
@@ -1494,6 +1495,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

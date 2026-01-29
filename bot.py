@@ -836,7 +836,7 @@ class FoodBot:
             # Запускаем задачу напоминаний
             self.application.job_queue.run_repeating(
                 self.send_reminders,
-                interval=timedelta(minutes=60),  # Проверяем каждый час
+                interval=timedelta(minutes=1),  # Проверяем каждый час
                 first=10  # Начинаем через 10 секунд после запуска
             )
             logger.info("Задача напоминаний настроена")
@@ -867,7 +867,10 @@ class FoodBot:
             current_time = now.time()
 
             # Проверяем, что сейчас 7:00 (или около того)
-            if current_time.hour == Config.REMINDER_TIME.hour and current_time.minute == Config.REMINDER_TIME.minute:
+            if (
+                    current_time.hour == Config.REMINDER_TIME.hour
+                    and 0 <= current_time.minute <= 9
+            ):
                 logger.info(f"Проверка напоминаний в {current_time.strftime('%H:%M')}")
 
                 # Получаем всех пользователей с включенными напоминаниями
@@ -1491,6 +1494,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

@@ -31,7 +31,7 @@ class Config:
     SESSIONS_FILE = "sessions.json"
     REMINDERS_FILE = "reminders.json"
     DEADLINE_TIME = time(8, 0)  # Дедлайн - 8:00 утра
-    REMINDER_TIME = time(7, 0)  # Напоминание в 7:00
+    REMINDER_TIME = time(14, 0)  # Напоминание в 7:00
     TIMEZONE_OFFSET = 2  # Смещение часового пояса (Москва UTC+3)
 
 
@@ -1491,6 +1491,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

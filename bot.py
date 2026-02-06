@@ -778,11 +778,11 @@ class KB:
         buttons = [
             [InlineKeyboardButton("🔑 Ввести ID ученика", callback_data="input_id")],
             [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
-            [
-                InlineKeyboardButton(
-                    f"{'🔔' if has_reminder else '🔕'} Напоминания: {'ВКЛ' if has_reminder else 'ВЫКЛ'}",
-                    callback_data="toggle_reminder"
-                )
+            # [
+            #     InlineKeyboardButton(
+            #         f"{'🔔' if has_reminder else '🔕'} Напоминания: {'ВКЛ' if has_reminder else 'ВЫКЛ'}",
+            #         callback_data="toggle_reminder"
+            #     )
             ]
         ]
         return InlineKeyboardMarkup(buttons)
@@ -1004,14 +1004,14 @@ class FoodBot:
                 f"👤 **{connection_info['student_name']}**\n"
                 f"🏫 Класс: {connection_info['class_name']}\n\n"
                 f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
-                f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
+                # f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
                 f"Выберите действие:"
             )
         else:
             welcome_msg = (
                 f"🏫 **Система заказа школьного питания**\n\n"
                 f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
-                f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
+                # f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
                 f"Выберите действие:"
             )
 
@@ -1046,8 +1046,8 @@ class FoodBot:
             await query.edit_message_text(
                 f"🏫 **Система заказа школьного питания**\n\n"
                 f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
-                f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if new_state else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
-                f"{'✅ Напоминания включены! Буду напоминать в 7:00 утра.' if new_state else '❌ Напоминания отключены.'}\n\n"
+                # f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if new_state else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
+                # f"{'✅ Напоминания включены! Буду напоминать в 7:00 утра.' if new_state else '❌ Напоминания отключены.'}\n\n"
                 f"Выберите действие:",
                 parse_mode='Markdown',
                 reply_markup=KB.main(new_state)
@@ -1137,7 +1137,7 @@ class FoodBot:
             await query.edit_message_text(
                 f"🏫 **Система заказа школьного питания**\n\n"
                 f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
-                f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
+                # f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
                 f"Выберите действие:",
                 parse_mode='Markdown',
                 reply_markup=KB.main(has_reminder)
@@ -1698,3 +1698,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

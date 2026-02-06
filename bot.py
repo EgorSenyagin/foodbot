@@ -10,9 +10,6 @@ from datetime import datetime, timedelta, time, date
 from dataclasses import dataclass
 from typing import Dict, Tuple, Optional, List, Any
 from enum import Enum
-import threading
-import schedule
-import time as time_module
 
 from openpyxl import Workbook, load_workbook
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -778,12 +775,6 @@ class KB:
         buttons = [
             [InlineKeyboardButton("🔑 Ввести ID ученика", callback_data="input_id")],
             [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
-            # [
-            #     InlineKeyboardButton(
-            #         f"{'🔔' if has_reminder else '🔕'} Напоминания: {'ВКЛ' if has_reminder else 'ВЫКЛ'}",
-            #         callback_data="toggle_reminder"
-            #     )
-            ]
         ]
         return InlineKeyboardMarkup(buttons)
 
@@ -880,115 +871,6 @@ class FoodBot:
         self.user_sessions = {}
         self.application = application
 
-        # Флаг для управления потоком напоминаний
-        self.reminder_thread = None
-        self.stop_reminder_thread = False
-
-        # Настраиваем задачи
-        self._setup_reminder_thread()
-
-    def _setup_reminder_thread(self):
-        """Настраивает поток для периодической проверки напоминаний"""
-        self.reminder_thread = threading.Thread(target=self._reminder_scheduler, daemon=True)
-        self.reminder_thread.start()
-        logger.info("Поток напоминаний запущен")
-
-    def _reminder_scheduler(self):
-        """Планировщик напоминаний, работает в отдельном потоке"""
-        while not self.stop_reminder_thread:
-            try:
-                now = get_current_datetime()
-                current_time = now.time()
-
-                # Проверяем, что сейчас 7:00
-                if (
-                        current_time.hour == Config.REMINDER_TIME.hour
-                        and current_time.minute == Config.REMINDER_TIME.minute
-                ):
-                    logger.info(f"Время отправки напоминаний: {current_time.strftime('%H:%M:%S')}")
-
-                    # Запускаем отправку напоминаний в основном потоке
-                    asyncio.run_coroutine_threadsafe(
-                        self._process_reminders(self.application),
-                        asyncio.get_event_loop()
-                    )
-
-                    # Ждем 1 минуту, чтобы не запускать несколько раз в одну минуту
-                    time_module.sleep(60)
-
-                # Проверяем каждую минуту
-                time_module.sleep(60)
-
-            except Exception as e:
-                logger.error(f"Ошибка в планировщике напоминаний: {e}")
-                time_module.sleep(60)
-
-    async def _process_reminders(self, context):
-        """Обрабатывает отправку напоминаний"""
-        now = get_current_datetime()
-
-        # Получаем всех пользователей с включенными напоминаниями
-        users_with_reminders = self.db.reminder_manager.get_all_users_with_reminders()
-
-        logger.info(f"Начинаем отправку напоминаний для {len(users_with_reminders)} пользователей")
-
-        sent_count = 0
-        error_count = 0
-
-        for user_id in users_with_reminders:
-            try:
-                # Получаем ID ученика из постоянного хранилища
-                connection_info = self.db.connection_manager.get_student_info_for_user(user_id)
-
-                if not connection_info:
-                    logger.debug(f"У пользователя {user_id} нет сохраненного ID ученика")
-                    continue
-
-                student_id = connection_info.get('student_id')
-                student_name = connection_info.get('student_name', '')
-                class_name = connection_info.get('class_name', '')
-
-                # Проверяем, есть ли заказ на завтра
-                tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-                orders = self.db.get_student_orders(student_id, tomorrow)
-                has_order = any(orders.values())
-
-                if not has_order:
-                    # Отправляем напоминание
-                    today = now.strftime('%d.%m.%Y')
-                    tomorrow_display = (now + timedelta(days=1)).strftime('%d.%m.%Y')
-
-                    message = (
-                        f"🔔 **Напоминание о заказе питания**\n\n"
-                        f"📅 Сегодня: {today}\n"
-                        f"📅 Завтра: {tomorrow_display}\n\n"
-                        f"👤 **{student_name}**\n"
-                        f"🏫 Класс: {class_name}\n\n"
-                        f"⚠️ **На завтра у вас нет заказа!**\n\n"
-                        f"🍳 Завтрак: {'❌'}\n"
-                        f"🍲 Обед: {'❌'}\n"
-                        f"🥪 Полдник: {'❌'}\n\n"
-                        f"⏰ Дедлайн: {Config.DEADLINE_TIME.strftime('%H:%M')}\n"
-                        f"⚡ Успейте сделать заказ!"
-                    )
-
-                    await self.application.bot.send_message(
-                        chat_id=user_id,
-                        text=message,
-                        parse_mode='Markdown'
-                    )
-                    sent_count += 1
-                    logger.info(f"Отправлено напоминание пользователю {user_id} для ученика {student_name}")
-
-                    # Небольшая пауза между отправками
-                    await asyncio.sleep(0.1)
-
-            except Exception as e:
-                error_count += 1
-                logger.error(f"Ошибка отправки напоминания пользователю {user_id}: {e}")
-
-        logger.info(f"Напоминания отправлены: {sent_count} успешно, {error_count} с ошибками")
-
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
         user_id = update.effective_user.id
@@ -1004,14 +886,12 @@ class FoodBot:
                 f"👤 **{connection_info['student_name']}**\n"
                 f"🏫 Класс: {connection_info['class_name']}\n\n"
                 f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
-                # f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
                 f"Выберите действие:"
             )
         else:
             welcome_msg = (
                 f"🏫 **Система заказа школьного питания**\n\n"
                 f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
-                # f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
                 f"Выберите действие:"
             )
 
@@ -1046,8 +926,6 @@ class FoodBot:
             await query.edit_message_text(
                 f"🏫 **Система заказа школьного питания**\n\n"
                 f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
-                # f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if new_state else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
-                # f"{'✅ Напоминания включены! Буду напоминать в 7:00 утра.' if new_state else '❌ Напоминания отключены.'}\n\n"
                 f"Выберите действие:",
                 parse_mode='Markdown',
                 reply_markup=KB.main(new_state)
@@ -1137,7 +1015,6 @@ class FoodBot:
             await query.edit_message_text(
                 f"🏫 **Система заказа школьного питания**\n\n"
                 f"📅 Сегодня: {now.strftime('%d.%m.%Y')}\n"
-                # f"⏰ Напоминания: {'🔔 ВКЛЮЧЕНЫ (в 7:00)' if has_reminder else '🔕 ВЫКЛЮЧЕНЫ'}\n\n"
                 f"Выберите действие:",
                 parse_mode='Markdown',
                 reply_markup=KB.main(has_reminder)
@@ -1422,7 +1299,6 @@ class FoodBot:
             f"👤 **{student_info.full_name}**\n"
             f"🏫 Класс: {student_info.class_name}\n"
             f"🔑 ID: {student_id}\n\n"
-            # f"✅ Связь сохранена для напоминаний\n\n"
             f"Выберите дату (🔒 - редактирование закрыто):",
             parse_mode='Markdown',
             reply_markup=KB.dates(dates)
@@ -1589,7 +1465,6 @@ class FoodBot:
 
         try:
             # Запускаем отправку напоминаний
-            await self._process_reminders(context)
             await update.message.reply_text("✅ Тестовое напоминание отправлено")
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -1698,4 +1573,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
